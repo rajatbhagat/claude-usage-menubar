@@ -63,6 +63,16 @@ enum PlanUsageFetcher {
         return nil
     }
 
+    /// An empty, app-owned directory to run `claude` in, so it has no project
+    /// context to discover. Falls back to the temp directory itself if creation
+    /// fails — anything is better than inheriting "/".
+    private static func safeWorkingDirectory() -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClaudeUsageMenuBar-cwd", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     static func fetch(completion: @escaping (Result<PlanUsageSnapshot, Error>) -> Void) {
         guard let claudeURL = resolveClaudeExecutable() else {
             completion(.failure(PlanUsageError.claudeNotFound))
@@ -71,20 +81,32 @@ enum PlanUsageFetcher {
 
         let process = Process()
         process.executableURL = claudeURL
-        // --safe-mode: disables CLAUDE.md loading, skills, plugins, hooks, MCP
-        // servers, custom commands/agents, output styles, workflows, and themes
-        // — real-world testing showed macOS attributing a Photos/Music/Desktop/
-        // network-volume access prompt to this app even with zero entitlements
-        // and no shell involved, which only makes sense if it came from claude's
-        // own background behavior (plugin sync, MCP server startup, etc. — see
-        // `claude --help`'s description of --bare) running as our child process.
-        // --safe-mode keeps auth working normally (confirmed: /usage still
-        // returns full session/week percentages) while turning that off.
-        // --no-chrome: belt-and-suspenders against its Chrome integration.
-        // --tools "": disables all built-in tools — /usage is a local,
-        // informational command (confirmed zero API/model cost) with no
-        // legitimate reason to execute a tool at all.
-        process.arguments = ["--safe-mode", "--no-chrome", "--tools", "", "-p", "/usage", "--output-format", "json"]
+
+        // THE important line. macOS launches GUI apps with a working directory
+        // of "/", and a subprocess inherits it — so `claude` was treating the
+        // whole filesystem root as its project directory and doing project
+        // discovery from there, walking into /Volumes (network volumes) and
+        // /Users/<me> (Desktop, Pictures→Photos, Music). That is what triggered
+        // the unrelated permission prompts, and it survived every earlier fix
+        // (AppleScript → login shell → direct exec) because all three inherited
+        // the same cwd. Proof it was happening: those invocations registered a
+        // project directory at ~/.claude/projects/- , the flattened form of "/".
+        // Pointing cwd at an empty, app-owned temp directory gives `claude`
+        // nothing to discover.
+        process.currentDirectoryURL = safeWorkingDirectory()
+
+        // --safe-mode: no CLAUDE.md, skills, plugins, hooks, MCP servers, custom
+        //   commands/agents, output styles, workflows or themes. Auth still works
+        //   normally (verified: /usage returns full percentages).
+        // --no-chrome: no Chrome integration.
+        // --tools "": no built-in tools — /usage is a local, zero-model-cost
+        //   command with no legitimate reason to execute one.
+        // --no-session-persistence: don't write a session transcript for every
+        //   poll. Without it this wrote ~1 file per minute into ~/.claude/projects.
+        process.arguments = [
+            "--safe-mode", "--no-chrome", "--tools", "", "--no-session-persistence",
+            "-p", "/usage", "--output-format", "json",
+        ]
         // Minimal, explicit environment — no shell, no profile sourcing, so no
         // shell startup script can act on this app's behalf. `claude` itself
         // only needs HOME (to find ~/.claude) and a basic PATH for anything it

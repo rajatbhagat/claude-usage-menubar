@@ -18,7 +18,28 @@ runs `claude` as a directly-exec'd subprocess (resolved to its binary path,
 no shell involved at all), which macOS never gates behind a permission
 prompt.
 
-Two earlier approaches both leaked into things this app has no business
+### The actual root cause (found last, after three wrong guesses)
+
+macOS launches GUI apps with a working directory of **`/`**, and a spawned
+subprocess inherits it. So `claude` was treating the **entire filesystem
+root** as its project directory and doing project discovery from there —
+walking into `/Volumes` (network volumes) and `/Users/<you>` (Desktop,
+Pictures→Photos, Music). That is exactly the set of permission prompts that
+appeared, and it survived three consecutive "fixes" (AppleScript → login
+shell → direct exec) because all three inherited the same cwd.
+
+Hard evidence: those invocations had registered a project directory at
+`~/.claude/projects/-` — the flattened form of `/`. The fix is one line,
+`process.currentDirectoryURL`, pointing at an empty app-owned temp
+directory so `claude` has nothing to discover. Verified by launching the
+real `.app` (cwd `/`), running two fetch cycles, and confirming no root
+project directory is recreated.
+
+The lesson, recorded because it caused three bad fixes: every earlier test
+ran from a normal working directory and never reproduced the actual launch
+condition.
+
+Two earlier approaches also leaked into things this app has no business
 touching, and both were reverted after real-world testing caught them:
 
 1. Routing `claude -p '/usage'` through AppleScript's `do shell script`
@@ -45,14 +66,20 @@ touching, and both were reverted after real-world testing caught them:
 The current approach resolves `claude`'s binary path with plain filesystem
 checks (`~/.local/bin`, Homebrew paths, nvm's versioned node dirs) and execs
 it directly with an explicit, minimal environment (`HOME`, `USER`, a basic
-`PATH`) — no shell, no profile sourcing, no AppleScript — **plus**
-`--safe-mode` (disables CLAUDE.md loading, skills, plugins, hooks, MCP
-servers, custom commands/agents, output styles, workflows, themes — while
-auth keeps working normally), `--no-chrome`, and `--tools ""` (disables all
-built-in tools; `/usage` is a local, zero-model-cost command with no
-legitimate reason to invoke one). All three flags were verified to still
-return full session/week percentages before shipping. This also turned out
-to fix the data-completeness issue below as a side effect.
+`PATH`) — no shell, no profile sourcing, no AppleScript — **with an explicit
+empty working directory** (the actual fix, above), **plus** these flags:
+
+- `--safe-mode` — no CLAUDE.md, skills, plugins, hooks, MCP servers, custom
+  commands/agents, output styles, workflows or themes. Auth still works.
+- `--no-chrome` — no Chrome integration.
+- `--tools ""` — no built-in tools; `/usage` is a local, zero-model-cost
+  command with no reason to execute one.
+- `--no-session-persistence` — don't write a session transcript per poll.
+  Without it the app wrote ~1 file per minute (~1,400/day) into
+  `~/.claude/projects`.
+
+Every flag was verified to still return full session/week percentages before
+shipping. This also fixed the data-completeness issue below as a side effect.
 
 ## Where the numbers come from
 
