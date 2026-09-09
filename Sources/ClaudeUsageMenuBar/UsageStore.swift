@@ -20,10 +20,6 @@ final class UsageStore: ObservableObject {
     private var currentDayKey = UsageStore.dayKey(for: Date())
     private var timer: Timer?
 
-    var menuBarTitle: String {
-        "\(formatTokens(todayTotal.totalTokens)) · \(formatCost(todayCost))"
-    }
-
     init() {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in

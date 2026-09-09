@@ -11,13 +11,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct ClaudeUsageMenuBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = UsageStore()
+    @StateObject private var planStore = PlanUsageStore()
+    @StateObject private var localStore = UsageStore()
 
     var body: some Scene {
         MenuBarExtra {
-            UsageMenuView(store: store)
+            UsageMenuView(planStore: planStore, localStore: localStore)
         } label: {
-            Text(store.menuBarTitle)
+            HStack(spacing: 4) {
+                MenuBarRingGauge(percent: planStore.snapshot?.sessionPercent)
+                if let percent = planStore.snapshot?.sessionPercent {
+                    Text("\(percent)%")
+                } else {
+                    Text("–")
+                }
+            }
         }
         .menuBarExtraStyle(.window)
     }
