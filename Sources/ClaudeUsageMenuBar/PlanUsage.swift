@@ -71,7 +71,20 @@ enum PlanUsageFetcher {
 
         let process = Process()
         process.executableURL = claudeURL
-        process.arguments = ["-p", "/usage", "--output-format", "json"]
+        // --safe-mode: disables CLAUDE.md loading, skills, plugins, hooks, MCP
+        // servers, custom commands/agents, output styles, workflows, and themes
+        // — real-world testing showed macOS attributing a Photos/Music/Desktop/
+        // network-volume access prompt to this app even with zero entitlements
+        // and no shell involved, which only makes sense if it came from claude's
+        // own background behavior (plugin sync, MCP server startup, etc. — see
+        // `claude --help`'s description of --bare) running as our child process.
+        // --safe-mode keeps auth working normally (confirmed: /usage still
+        // returns full session/week percentages) while turning that off.
+        // --no-chrome: belt-and-suspenders against its Chrome integration.
+        // --tools "": disables all built-in tools — /usage is a local,
+        // informational command (confirmed zero API/model cost) with no
+        // legitimate reason to execute a tool at all.
+        process.arguments = ["--safe-mode", "--no-chrome", "--tools", "", "-p", "/usage", "--output-format", "json"]
         // Minimal, explicit environment — no shell, no profile sourcing, so no
         // shell startup script can act on this app's behalf. `claude` itself
         // only needs HOME (to find ~/.claude) and a basic PATH for anything it

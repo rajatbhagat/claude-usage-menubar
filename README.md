@@ -30,12 +30,29 @@ touching, and both were reverted after real-world testing caught them:
    volume" prompt — almost certainly something in the user's shell startup
    files (`.zprofile`/`.zshrc`, oh-my-zsh, nvm, etc.), which is a black box
    this app has no reason to execute at all just to run one command.
+3. Even after removing the shell and AppleScript entirely (resolving
+   `claude`'s binary path and exec'ing it directly, zero entitlements,
+   nothing else running), the same class of prompts (Photos, Music, Desktop,
+   network volume) still appeared. Since nothing in this app's own code
+   touches any of those, and macOS attributes a non-sandboxed app's child
+   process's file access back to the parent, the remaining suspect was
+   `claude` itself: a normal (non-`--bare`) invocation loads plugins, hooks,
+   MCP servers, and does CLAUDE.md auto-discovery and background prefetches
+   (per `claude --help`'s own description of what `--bare` turns off) — any
+   of which could plausibly touch those locations as a side effect of a
+   user's actual configured plugins/MCP servers.
 
 The current approach resolves `claude`'s binary path with plain filesystem
 checks (`~/.local/bin`, Homebrew paths, nvm's versioned node dirs) and execs
 it directly with an explicit, minimal environment (`HOME`, `USER`, a basic
-`PATH`) — no shell, no profile sourcing, no AppleScript. This turned out to
-also fix the data-completeness issue below as a side effect.
+`PATH`) — no shell, no profile sourcing, no AppleScript — **plus**
+`--safe-mode` (disables CLAUDE.md loading, skills, plugins, hooks, MCP
+servers, custom commands/agents, output styles, workflows, themes — while
+auth keeps working normally), `--no-chrome`, and `--tools ""` (disables all
+built-in tools; `/usage` is a local, zero-model-cost command with no
+legitimate reason to invoke one). All three flags were verified to still
+return full session/week percentages before shipping. This also turned out
+to fix the data-completeness issue below as a side effect.
 
 ## Where the numbers come from
 
