@@ -10,17 +10,18 @@ struct PlanUsageSnapshot {
 }
 
 enum PlanUsageError: Error, CustomStringConvertible {
+    case claudeNotFound
     case commandFailed(String)
     case unparseable(String)
     /// `claude -p '/usage'` ran fine but its response omitted the percentages —
     /// observed when spawned as a plain headless subprocess (no controlling
-    /// terminal), which is how every non-AppleScript invocation from a GUI app
-    /// runs. Distinct from `.unparseable` so the UI can explain it rather than
-    /// show it as a generic parse failure.
+    /// terminal), which is how a GUI app runs it. Distinct from `.unparseable`
+    /// so the UI can explain it rather than show it as a generic parse failure.
     case noLiveNumbers
 
     var description: String {
         switch self {
+        case .claudeNotFound: return "couldn't find the claude CLI in any known install location"
         case .commandFailed(let s): return "claude /usage failed: \(s)"
         case .unparseable(let s): return "could not parse /usage output: \(s.prefix(200))"
         case .noLiveNumbers: return "claude /usage ran but didn't include percentages this time"
@@ -28,30 +29,58 @@ enum PlanUsageError: Error, CustomStringConvertible {
     }
 }
 
-/// Shells out to the actual `claude` CLI's `/usage` slash command — the same
-/// data source Claude Code itself uses to render "Plan usage limits" — rather
+/// Runs the actual `claude` CLI's `/usage` slash command — the same data
+/// source Claude Code itself uses to render "Plan usage limits" — rather
 /// than reverse-engineering an undocumented HTTP endpoint.
 enum PlanUsageFetcher {
+    /// Resolves `claude`'s binary path via plain filesystem checks — no shell,
+    /// no `PATH` lookup. Two earlier approaches both leaked into things this app
+    /// has no business touching: routing through `/bin/zsh -l` (to load PATH the
+    /// way a terminal does) caused an unrelated "access files on a network
+    /// volume" prompt, almost certainly from something in the user's shell
+    /// startup files (.zprofile/.zshrc, oh-my-zsh, nvm, etc.) — that's a black
+    /// box this app shouldn't be executing at all. Routing through AppleScript's
+    /// `do shell script` caused unrelated Automation prompts (Photos, Music,
+    /// Desktop access) — confirmed by removing the app and watching the prompts
+    /// stop. Resolving the path ourselves and exec'ing `claude` directly (it's a
+    /// native Mach-O binary, not a script) avoids both: no shell profile runs,
+    /// no AppleScript, no PATH-search side effects.
+    private static func resolveClaudeExecutable() -> URL? {
+        let home = NSHomeDirectory()
+        var candidates = [
+            "\(home)/.local/bin/claude",
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+        ]
+        if let nodeVersions = try? FileManager.default.contentsOfDirectory(atPath: "\(home)/.nvm/versions/node") {
+            for version in nodeVersions {
+                candidates.append("\(home)/.nvm/versions/node/\(version)/bin/claude")
+            }
+        }
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        return nil
+    }
+
     static func fetch(completion: @escaping (Result<PlanUsageSnapshot, Error>) -> Void) {
+        guard let claudeURL = resolveClaudeExecutable() else {
+            completion(.failure(PlanUsageError.claudeNotFound))
+            return
+        }
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        // -l (login, non-interactive): loads PATH the same way the user's terminal
-        // does (nvm, ~/.local/bin, etc.) — GUI apps otherwise inherit a minimal
-        // launchd PATH that often doesn't include `claude`. Deliberately NOT -i
-        // (interactive): that mode writes terminal title escape sequences ahead
-        // of stdout, which corrupts the JSON this depends on.
-        //
-        // This sometimes gets an abbreviated /usage response with no percentages
-        // (confirmed even fully detached from any parent process, so it isn't an
-        // ancestry artifact — root cause unconfirmed). Routing through AppleScript's
-        // `do shell script` reliably got full data instead, but real-world testing
-        // showed it also triggers unrelated macOS Automation permission prompts
-        // (Photos, Music, Desktop folder access) — confirmed by removing the app
-        // and seeing the prompts stop. A plain subprocess spawn never triggers any
-        // macOS permission prompt, so this stays the safe default even though the
-        // live percentages aren't always available; parse failures degrade to the
-        // "Couldn't read plan usage" state rather than showing wrong numbers.
-        process.arguments = ["-l", "-c", "claude -p '/usage' --output-format json"]
+        process.executableURL = claudeURL
+        process.arguments = ["-p", "/usage", "--output-format", "json"]
+        // Minimal, explicit environment — no shell, no profile sourcing, so no
+        // shell startup script can act on this app's behalf. `claude` itself
+        // only needs HOME (to find ~/.claude) and a basic PATH for anything it
+        // shells out to internally.
+        process.environment = [
+            "HOME": NSHomeDirectory(),
+            "USER": NSUserName(),
+            "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+        ]
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

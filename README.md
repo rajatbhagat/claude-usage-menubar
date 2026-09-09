@@ -14,33 +14,46 @@ This app requests **zero macOS permissions**: no entitlements, no
 `Info.plist` usage-description keys, no Photos/Music/Automation/Files access
 of any kind — verified with `codesign -d --entitlements` and by inspecting
 `Info.plist` directly. It reads only your own `~/.claude/projects` logs and
-runs `claude` as a plain subprocess, which macOS never gates behind a
-permission prompt.
+runs `claude` as a directly-exec'd subprocess (resolved to its binary path,
+no shell involved at all), which macOS never gates behind a permission
+prompt.
 
-An earlier version routed the `claude -p '/usage'` call through AppleScript's
-`do shell script` to work around a data-availability issue (below). That
-reliably got full data, but real-world testing showed it also triggered
-unrelated macOS Automation permission prompts (Photos, Music, Desktop folder
-access) — confirmed by removing the app and watching the prompts stop. That
-approach was reverted. The tradeoff: the live percentages aren't always
-available (see next section), but the app never asks for anything it
-shouldn't.
+Two earlier approaches both leaked into things this app has no business
+touching, and both were reverted after real-world testing caught them:
 
-## Where the numbers come from, and a known limitation
+1. Routing `claude -p '/usage'` through AppleScript's `do shell script`
+   (to reliably get full data) triggered unrelated Automation permission
+   prompts — Photos, Music, Desktop folder access — confirmed by removing
+   the app and watching the prompts stop.
+2. Routing it through `/bin/zsh -l -c "claude ..."` (to load `PATH` the way
+   a terminal does) triggered an unrelated "access files on a network
+   volume" prompt — almost certainly something in the user's shell startup
+   files (`.zprofile`/`.zshrc`, oh-my-zsh, nvm, etc.), which is a black box
+   this app has no reason to execute at all just to run one command.
 
-The plan-usage gauge shells out to the real `claude` CLI (`claude -p '/usage'
+The current approach resolves `claude`'s binary path with plain filesystem
+checks (`~/.local/bin`, Homebrew paths, nvm's versioned node dirs) and execs
+it directly with an explicit, minimal environment (`HOME`, `USER`, a basic
+`PATH`) — no shell, no profile sourcing, no AppleScript. This turned out to
+also fix the data-completeness issue below as a side effect.
+
+## Where the numbers come from
+
+The plan-usage gauge runs the real `claude` CLI (`claude -p '/usage'
 --output-format json`) every 60 seconds — the same code path Claude Code
 itself uses to render "Plan usage limits" — rather than reverse-engineering
 an undocumented API endpoint or scraping Keychain-stored credentials.
 
-**Known limitation:** `claude -p '/usage'` sometimes omits the percentages
-when run as a plain headless subprocess (no controlling terminal) — this was
-confirmed even when the subprocess has no `claude` ancestor at all (tested
-via a `launchd`-submitted job, matching how a real double-clicked app
-spawns), so it isn't a nested-session artifact. Root cause isn't confirmed.
-When this happens, the popover shows "Live percentages unavailable right
-now" instead of a stale or guessed number, and keeps retrying every 60s —
-the local-log token/cost section below it stays accurate regardless.
+An earlier version of the direct-exec approach (routed through a login shell)
+sometimes got an abbreviated response with no percentages. Bypassing the
+shell entirely — exec'ing the resolved binary path directly with a minimal
+environment — reliably returns full data in testing (verified via a
+`launchd`-submitted job, fully detached from any parent process, matching
+how a real double-clicked app spawns). If `claude -p '/usage'` ever does
+return without percentages, the popover shows "Live percentages unavailable
+right now" and keeps retrying every 60s, rather than showing a stale or
+guessed number — the local-log token/cost section below it stays accurate
+regardless.
 
 The supplementary "today" section reads your own local session logs at
 `~/.claude/projects/**/*.jsonl` — no API key, no network access for that part.
