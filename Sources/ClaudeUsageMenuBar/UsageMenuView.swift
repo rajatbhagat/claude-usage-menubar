@@ -20,6 +20,13 @@ struct UsageMenuView: View {
                 if let weekPercent = snapshot.weekPercent {
                     planRow(title: "Current week (all models)", percent: weekPercent, resetsAt: snapshot.weekResetsAt, resetRaw: snapshot.weekResetRaw)
                 }
+            } else if planStore.liveNumbersUnavailable {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Live percentages unavailable right now").font(.system(size: 12, weight: .semibold))
+                    Text("claude /usage didn't include them this check — it'll keep retrying. Local stats below are still accurate.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
             } else if let error = planStore.lastError {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Couldn't read plan usage").font(.system(size: 12, weight: .semibold))

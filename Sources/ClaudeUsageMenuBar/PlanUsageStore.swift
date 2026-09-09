@@ -5,6 +5,7 @@ final class PlanUsageStore: ObservableObject {
     @Published private(set) var snapshot: PlanUsageSnapshot?
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var lastError: String?
+    @Published private(set) var liveNumbersUnavailable = false
     @Published private(set) var isRefreshing = false
 
     private var timer: Timer?
@@ -32,9 +33,16 @@ final class PlanUsageStore: ObservableObject {
                 case .success(let snapshot):
                     self.snapshot = snapshot
                     self.lastError = nil
+                    self.liveNumbersUnavailable = false
                     self.lastUpdated = Date()
                 case .failure(let error):
-                    self.lastError = String(describing: error)
+                    if case PlanUsageError.noLiveNumbers = error {
+                        self.liveNumbersUnavailable = true
+                        self.lastError = nil
+                    } else {
+                        self.liveNumbersUnavailable = false
+                        self.lastError = String(describing: error)
+                    }
                 }
             }
         }

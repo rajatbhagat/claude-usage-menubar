@@ -8,13 +8,39 @@ Menu bar icon: a colored ring (green/yellow/red) + percentage for the current
 session's usage. Click it for both the session and weekly gauges with reset
 countdowns, plus a supplementary breakdown of today's local token usage/cost.
 
-## Where the numbers come from
+## Permission footprint (by design)
+
+This app requests **zero macOS permissions**: no entitlements, no
+`Info.plist` usage-description keys, no Photos/Music/Automation/Files access
+of any kind — verified with `codesign -d --entitlements` and by inspecting
+`Info.plist` directly. It reads only your own `~/.claude/projects` logs and
+runs `claude` as a plain subprocess, which macOS never gates behind a
+permission prompt.
+
+An earlier version routed the `claude -p '/usage'` call through AppleScript's
+`do shell script` to work around a data-availability issue (below). That
+reliably got full data, but real-world testing showed it also triggered
+unrelated macOS Automation permission prompts (Photos, Music, Desktop folder
+access) — confirmed by removing the app and watching the prompts stop. That
+approach was reverted. The tradeoff: the live percentages aren't always
+available (see next section), but the app never asks for anything it
+shouldn't.
+
+## Where the numbers come from, and a known limitation
 
 The plan-usage gauge shells out to the real `claude` CLI (`claude -p '/usage'
 --output-format json`) every 60 seconds — the same code path Claude Code
 itself uses to render "Plan usage limits" — rather than reverse-engineering
-an undocumented API endpoint. If `claude` isn't on `PATH` or the parse fails,
-the popover shows the raw error instead of guessing.
+an undocumented API endpoint or scraping Keychain-stored credentials.
+
+**Known limitation:** `claude -p '/usage'` sometimes omits the percentages
+when run as a plain headless subprocess (no controlling terminal) — this was
+confirmed even when the subprocess has no `claude` ancestor at all (tested
+via a `launchd`-submitted job, matching how a real double-clicked app
+spawns), so it isn't a nested-session artifact. Root cause isn't confirmed.
+When this happens, the popover shows "Live percentages unavailable right
+now" instead of a stale or guessed number, and keeps retrying every 60s —
+the local-log token/cost section below it stays accurate regardless.
 
 The supplementary "today" section reads your own local session logs at
 `~/.claude/projects/**/*.jsonl` — no API key, no network access for that part.
@@ -66,16 +92,9 @@ open ClaudeUsageMenuBar.app
 - The app was smoke-tested end-to-end (builds, launches, survives a full
   60s plan-usage fetch cycle, exits cleanly) in a headless session with no
   attached display, so the menu bar UI itself hasn't been visually
-  confirmed — check that the ring gauge and popover render as expected the
-  first time you run it.
-- The `claude -p '/usage'` call was verified to return an abbreviated
-  response (no percentages) when its process tree has another `claude`
-  process as an ancestor — e.g. running the built binary directly inside an
-  active Claude Code session's terminal. A normal launch (Finder,
-  `open`, Login Items) has no such ancestor and returns full data; this was
-  confirmed via a process path with no `claude` ancestor. If you ever do see
-  "Couldn't read plan usage" in the popover, check whether you launched it
-  from inside a Claude Code session.
+  confirmed beyond what the user directly reported.
 - Ad-hoc signed (`codesign -s -`) — fine for local use; Gatekeeper may still
   warn on first launch since it isn't notarized. Right-click → Open once to
-  bypass.
+  bypass. Note ad-hoc signatures change on every rebuild, so macOS may treat
+  a rebuilt app as a "new" app for any permission it does end up needing in
+  the future — not an issue today since it requests none.

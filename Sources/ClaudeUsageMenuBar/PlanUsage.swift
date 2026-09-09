@@ -12,11 +12,18 @@ struct PlanUsageSnapshot {
 enum PlanUsageError: Error, CustomStringConvertible {
     case commandFailed(String)
     case unparseable(String)
+    /// `claude -p '/usage'` ran fine but its response omitted the percentages —
+    /// observed when spawned as a plain headless subprocess (no controlling
+    /// terminal), which is how every non-AppleScript invocation from a GUI app
+    /// runs. Distinct from `.unparseable` so the UI can explain it rather than
+    /// show it as a generic parse failure.
+    case noLiveNumbers
 
     var description: String {
         switch self {
         case .commandFailed(let s): return "claude /usage failed: \(s)"
         case .unparseable(let s): return "could not parse /usage output: \(s.prefix(200))"
+        case .noLiveNumbers: return "claude /usage ran but didn't include percentages this time"
         }
     }
 }
@@ -27,19 +34,30 @@ enum PlanUsageError: Error, CustomStringConvertible {
 enum PlanUsageFetcher {
     static func fetch(completion: @escaping (Result<PlanUsageSnapshot, Error>) -> Void) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        // Running `claude -p '/usage'` via a directly-spawned `/bin/zsh -l -c`
-        // reliably gets an abbreviated response with no percentages (verified
-        // against real output — not a guess). Routing it through AppleScript's
-        // `do shell script`, which loads the user's login shell environment the
-        // same way Terminal.app does, was the one invocation path that
-        // consistently returned the full session/week numbers in testing.
-        process.arguments = ["-e", "do shell script \"claude -p '/usage' --output-format json\""]
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        // -l (login, non-interactive): loads PATH the same way the user's terminal
+        // does (nvm, ~/.local/bin, etc.) — GUI apps otherwise inherit a minimal
+        // launchd PATH that often doesn't include `claude`. Deliberately NOT -i
+        // (interactive): that mode writes terminal title escape sequences ahead
+        // of stdout, which corrupts the JSON this depends on.
+        //
+        // This sometimes gets an abbreviated /usage response with no percentages
+        // (confirmed even fully detached from any parent process, so it isn't an
+        // ancestry artifact — root cause unconfirmed). Routing through AppleScript's
+        // `do shell script` reliably got full data instead, but real-world testing
+        // showed it also triggers unrelated macOS Automation permission prompts
+        // (Photos, Music, Desktop folder access) — confirmed by removing the app
+        // and seeing the prompts stop. A plain subprocess spawn never triggers any
+        // macOS permission prompt, so this stays the safe default even though the
+        // live percentages aren't always available; parse failures degrade to the
+        // "Couldn't read plan usage" state rather than showing wrong numbers.
+        process.arguments = ["-l", "-c", "claude -p '/usage' --output-format json"]
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        // Without this, `claude -p` waits ~3s for stdin before proceeding.
         process.standardInput = FileHandle.nullDevice
 
         process.terminationHandler = { proc in
@@ -81,6 +99,9 @@ enum PlanUsageFetcher {
             pattern: #"Current session:\s*(\d+)% used\s*·\s*resets\s*(.+?)\s*\(([^)]+)\)"#,
             in: resultText
         ) else {
+            if resultText.contains("using your subscription") {
+                throw PlanUsageError.noLiveNumbers
+            }
             throw PlanUsageError.unparseable(resultText)
         }
         let week = extract(
