@@ -1,157 +1,156 @@
 # Claude Usage Menu Bar
 
-A macOS menu bar app that shows a live graphical gauge of your Claude Pro/Max
-**plan usage limits** — the same "Current session" / "Current week" percentages
-Claude Code's own `/usage` command reports — right in the menu bar icon.
+A tiny macOS menu bar app that shows how much of your Claude Pro/Max **plan
+usage limit** you've burned through — as a live colored ring in the menu bar,
+so you can see it at a glance without opening anything.
 
-Menu bar icon: a colored ring (green/yellow/red) + percentage for the current
-session's usage. Click it for both the session and weekly gauges with reset
-countdowns, plus a supplementary breakdown of today's local token usage/cost.
+![Claude Usage Menu Bar showing session and weekly usage](docs/screenshot.png)
 
-## Permission footprint (by design)
+**In the menu bar:** a ring gauge + percentage for your current session's
+usage, colored green (under 60%), amber (60–85%), or red (over 85%).
 
-This app requests **zero macOS permissions**: no entitlements, no
-`Info.plist` usage-description keys, no Photos/Music/Automation/Files access
-of any kind — verified with `codesign -d --entitlements` and by inspecting
-`Info.plist` directly. It reads only your own `~/.claude/projects` logs and
-runs `claude` as a directly-exec'd subprocess (resolved to its binary path,
-no shell involved at all), which macOS never gates behind a permission
-prompt.
+**Click it for:** current session and current week percentages with reset
+countdowns, plus today's local token count and estimated cost.
 
-### The actual root cause (found last, after three wrong guesses)
+It requests **zero macOS permissions** — no Photos, Files, Automation, or
+anything else. See [Permissions](#permissions).
 
-macOS launches GUI apps with a working directory of **`/`**, and a spawned
-subprocess inherits it. So `claude` was treating the **entire filesystem
-root** as its project directory and doing project discovery from there —
-walking into `/Volumes` (network volumes) and `/Users/<you>` (Desktop,
-Pictures→Photos, Music). That is exactly the set of permission prompts that
-appeared, and it survived three consecutive "fixes" (AppleScript → login
-shell → direct exec) because all three inherited the same cwd.
+## Requirements
 
-Hard evidence: those invocations had registered a project directory at
-`~/.claude/projects/-` — the flattened form of `/`. The fix is one line,
-`process.currentDirectoryURL`, pointing at an empty app-owned temp
-directory so `claude` has nothing to discover. Verified by launching the
-real `.app` (cwd `/`), running two fetch cycles, and confirming no root
-project directory is recreated.
+- macOS 13 (Ventura) or later
+- [Claude Code](https://claude.com/claude-code) installed and signed in with a
+  **Claude subscription** (Pro/Max). The plan-limit percentages come from your
+  subscription; API-key billing has no session/weekly limits to display.
+- Xcode **Command Line Tools** (`xcode-select --install`). Full Xcode is *not*
+  required.
 
-The lesson, recorded because it caused three bad fixes: every earlier test
-ran from a normal working directory and never reproduced the actual launch
-condition.
+## Install
 
-Two earlier approaches also leaked into things this app has no business
-touching, and both were reverted after real-world testing caught them:
+```bash
+git clone https://github.com/rajatbhagat/claude-usage-menubar.git
+cd claude-usage-menubar
+./build_app.sh
+```
 
-1. Routing `claude -p '/usage'` through AppleScript's `do shell script`
-   (to reliably get full data) triggered unrelated Automation permission
-   prompts — Photos, Music, Desktop folder access — confirmed by removing
-   the app and watching the prompts stop.
-2. Routing it through `/bin/zsh -l -c "claude ..."` (to load `PATH` the way
-   a terminal does) triggered an unrelated "access files on a network
-   volume" prompt — almost certainly something in the user's shell startup
-   files (`.zprofile`/`.zshrc`, oh-my-zsh, nvm, etc.), which is a black box
-   this app has no reason to execute at all just to run one command.
-3. Even after removing the shell and AppleScript entirely (resolving
-   `claude`'s binary path and exec'ing it directly, zero entitlements,
-   nothing else running), the same class of prompts (Photos, Music, Desktop,
-   network volume) still appeared. Since nothing in this app's own code
-   touches any of those, and macOS attributes a non-sandboxed app's child
-   process's file access back to the parent, the remaining suspect was
-   `claude` itself: a normal (non-`--bare`) invocation loads plugins, hooks,
-   MCP servers, and does CLAUDE.md auto-discovery and background prefetches
-   (per `claude --help`'s own description of what `--bare` turns off) — any
-   of which could plausibly touch those locations as a side effect of a
-   user's actual configured plugins/MCP servers.
+That produces `ClaudeUsageMenuBar.app` in the project directory. Move it where
+you want it and launch it:
 
-The current approach resolves `claude`'s binary path with plain filesystem
-checks (`~/.local/bin`, Homebrew paths, nvm's versioned node dirs) and execs
-it directly with an explicit, minimal environment (`HOME`, `USER`, a basic
-`PATH`) — no shell, no profile sourcing, no AppleScript — **with an explicit
-empty working directory** (the actual fix, above), **plus** these flags:
+```bash
+mv ClaudeUsageMenuBar.app /Applications/
+open /Applications/ClaudeUsageMenuBar.app
+```
 
-- `--safe-mode` — no CLAUDE.md, skills, plugins, hooks, MCP servers, custom
-  commands/agents, output styles, workflows or themes. Auth still works.
-- `--no-chrome` — no Chrome integration.
-- `--tools ""` — no built-in tools; `/usage` is a local, zero-model-cost
-  command with no reason to execute one.
-- `--no-session-persistence` — don't write a session transcript per poll.
-  Without it the app wrote ~1 file per minute (~1,400/day) into
-  `~/.claude/projects`.
+The app is ad-hoc signed, not notarized, so on first launch macOS may warn that
+it's from an unidentified developer. Right-click the app → **Open** → **Open**
+to get past it once; subsequent launches are fine.
 
-Every flag was verified to still return full session/week percentages before
-shipping. This also fixed the data-completeness issue below as a side effect.
+There's no Dock icon or window — look for the ring in your menu bar. Quit from
+the popover's **Quit** button.
 
-## Where the numbers come from
+### Start it automatically at login
 
-The plan-usage gauge runs the real `claude` CLI (`claude -p '/usage'
---output-format json`) every 60 seconds — the same code path Claude Code
-itself uses to render "Plan usage limits" — rather than reverse-engineering
-an undocumented API endpoint or scraping Keychain-stored credentials.
+System Settings → General → Login Items → **+** → select
+`ClaudeUsageMenuBar.app`.
 
-An earlier version of the direct-exec approach (routed through a login shell)
-sometimes got an abbreviated response with no percentages. Bypassing the
-shell entirely — exec'ing the resolved binary path directly with a minimal
-environment — reliably returns full data in testing (verified via a
-`launchd`-submitted job, fully detached from any parent process, matching
-how a real double-clicked app spawns). If `claude -p '/usage'` ever does
-return without percentages, the popover shows "Live percentages unavailable
-right now" and keeps retrying every 60s, rather than showing a stale or
-guessed number — the local-log token/cost section below it stays accurate
-regardless.
-
-The supplementary "today" section reads your own local session logs at
-`~/.claude/projects/**/*.jsonl` — no API key, no network access for that part.
-
-## Why a menu bar app, not a Notification Center widget
-
-Real macOS WidgetKit widgets refresh on an OS-controlled budget (minutes to
-hours) — they can't push live updates, and building one requires the full
-Xcode.app (not just Command Line Tools) to build a widget extension target
-and its App Group entitlement. A `MenuBarExtra` app updates continuously
-while running and needs only the Swift toolchain, which is why this project
-uses that instead.
-
-## Build & run
+### Run without building an app bundle
 
 ```bash
 swift build -c release
 .build/release/ClaudeUsageMenuBar
 ```
 
-Or build a proper double-clickable `.app`:
+## How it works
+
+**Plan usage (the ring).** Runs Claude Code's own `/usage` command
+(`claude -p '/usage' --output-format json`) every 30 seconds, and again the
+moment you open the popover, then parses the session and weekly percentages
+out of the response. This is the same data source Claude Code itself uses to
+render "Plan usage limits" — not a reverse-engineered API endpoint — so the
+numbers match what you see on claude.ai.
+
+Checking your usage this way costs nothing: `/usage` makes no model call
+(`total_cost_usd: 0`, zero tokens), so the widget never eats into the very
+allowance it's reporting on.
+
+**Local token stats (the bottom section).** Reads your own Claude Code session
+logs at `~/.claude/projects/**/*.jsonl`, tailing them incrementally by byte
+offset so it stays cheap as logs grow. It counts each assistant turn's `usage`
+block once (deduplicated by `requestId`) and prices it using the table in
+`Sources/ClaudeUsageMenuBar/UsageModels.swift`. "Today" resets at local
+midnight. A model missing from that pricing table still contributes tokens but
+no cost, and the popover flags that so the total isn't silently understated.
+
+No API key, no network calls of its own, no telemetry.
+
+## Permissions
+
+The app requests **no macOS permissions at all**: no entitlements, no
+`Info.plist` usage-description keys, no Photos/Music/Files/Automation access.
+You can verify before running it:
 
 ```bash
-./build_app.sh
-open ClaudeUsageMenuBar.app
+codesign -d --entitlements :- /Applications/ClaudeUsageMenuBar.app   # prints nothing
+plutil -p /Applications/ClaudeUsageMenuBar.app/Contents/Info.plist   # only basic bundle keys
 ```
 
-## Run automatically at login
+Getting to zero took some doing, and the reason is worth knowing if you're
+writing something similar: **macOS launches GUI apps with a working directory
+of `/`, and subprocesses inherit it.** Spawning `claude` from the app therefore
+made it treat the entire filesystem root as its project directory and scan from
+there — walking into `/Volumes` (network shares) and your home folder (Desktop,
+Photos, Music) and triggering permission prompts for all of them. The tell was
+a project directory registered at `~/.claude/projects/-`, the flattened form of
+`/`.
 
-1. `./build_app.sh`
-2. Move `ClaudeUsageMenuBar.app` to `/Applications`
-3. System Settings → General → Login Items → add it under "Open at Login"
+The fix is `process.currentDirectoryURL`, pointed at an empty app-owned temp
+directory so `claude` has nothing to discover. The app also runs it with
+`--safe-mode` (no plugins, MCP servers, hooks, or CLAUDE.md loading),
+`--no-chrome`, `--tools ""`, and `--no-session-persistence` (without which each
+poll wrote a transcript file — roughly 1,400 a day).
 
-## How the numbers are computed
+## Troubleshooting
 
-- **Plan usage (primary gauge):** parses the `result` text of `claude -p
-  '/usage' --output-format json`, extracting "Current session: N% used ·
-  resets <date> (<IANA timezone>)" and the equivalent weekly line via regex.
-  Reset countdowns are computed from the parsed date/timezone.
-- **Local logs (supplementary):** tails every `*.jsonl` under
-  `~/.claude/projects` incrementally (byte-offset tracked per file), counts
-  each assistant turn's `usage` block once (deduped by `requestId`), and
-  prices it against `Sources/ClaudeUsageMenuBar/UsageModels.swift`. "Today"
-  resets at local midnight. A model missing from that pricing table
-  contributes tokens but no cost, and the popover flags this.
+**The ring shows a dash and the popover says "Couldn't find the claude CLI".**
+The app looks for `claude` in `~/.local/bin`, `/opt/homebrew/bin`,
+`/usr/local/bin`, and nvm's versioned node directories. If yours is elsewhere,
+run `which claude` and add that path to `resolveClaudeExecutable()` in
+`Sources/ClaudeUsageMenuBar/PlanUsage.swift`.
 
-## Notes
+**"Live percentages unavailable right now".** `claude -p '/usage'` returned
+without percentages. It retries automatically every 30 seconds; the local token
+stats stay accurate meanwhile. If it persists, check that `claude` runs and
+that you're signed in with a subscription rather than an API key.
 
-- The app was smoke-tested end-to-end (builds, launches, survives a full
-  60s plan-usage fetch cycle, exits cleanly) in a headless session with no
-  attached display, so the menu bar UI itself hasn't been visually
-  confirmed beyond what the user directly reported.
-- Ad-hoc signed (`codesign -s -`) — fine for local use; Gatekeeper may still
-  warn on first launch since it isn't notarized. Right-click → Open once to
-  bypass. Note ad-hoc signatures change on every rebuild, so macOS may treat
-  a rebuilt app as a "new" app for any permission it does end up needing in
-  the future — not an issue today since it requests none.
+**The percentage looks lower than claude.ai.** Open the popover — it refreshes
+on open. Usage can climb several percent per minute under heavy use, so a
+background reading can lag briefly.
+
+## Development
+
+```bash
+swift build          # debug build
+swift build -c release
+./build_app.sh       # release build + .app bundle + ad-hoc signing
+```
+
+Source layout:
+
+| File | Purpose |
+| --- | --- |
+| `App.swift` | `MenuBarExtra` scene, accessory activation policy (no Dock icon) |
+| `PlanUsage.swift` | Runs and parses `claude -p '/usage'` |
+| `PlanUsageStore.swift` | Polling, refresh state |
+| `LogScanner.swift` | Incremental tailing of `~/.claude/projects/**/*.jsonl` |
+| `UsageStore.swift` | Local token/cost aggregation |
+| `UsageModels.swift` | Usage totals and the model pricing table |
+| `GaugeViews.swift` | Ring and bar gauges |
+| `UsageMenuView.swift` | Popover UI |
+
+Note that `build_app.sh` signs ad-hoc (`codesign -s -`), which produces a
+different signature on every build. If you later add a capability that *does*
+need a permission, macOS will treat each rebuild as a new app and re-prompt;
+use a stable self-signed identity at that point.
+
+## License
+
+MIT
