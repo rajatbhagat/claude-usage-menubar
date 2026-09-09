@@ -15,15 +15,15 @@ struct MenuBarRingGauge: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Color.secondary.opacity(0.3), lineWidth: 2.5)
+                .stroke(Color.secondary.opacity(0.5), lineWidth: 3)
             if let percent {
                 Circle()
                     .trim(from: 0, to: CGFloat(min(max(percent, 0), 100)) / 100)
-                    .stroke(gaugeColor(for: percent), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .stroke(gaugeColor(for: percent), style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
         }
-        .frame(width: 15, height: 15)
+        .frame(width: 17, height: 17)
     }
 }
 

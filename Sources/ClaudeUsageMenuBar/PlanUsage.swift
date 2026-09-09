@@ -27,19 +27,19 @@ enum PlanUsageError: Error, CustomStringConvertible {
 enum PlanUsageFetcher {
     static func fetch(completion: @escaping (Result<PlanUsageSnapshot, Error>) -> Void) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        // -l (login, non-interactive): loads PATH the same way the user's terminal
-        // does (nvm, ~/.local/bin, etc.) — GUI apps otherwise inherit a minimal
-        // launchd PATH that often doesn't include `claude`. Deliberately NOT -i
-        // (interactive): that mode writes terminal title escape sequences ahead
-        // of stdout, which corrupts the JSON this depends on.
-        process.arguments = ["-l", "-c", "claude -p '/usage' --output-format json"]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        // Running `claude -p '/usage'` via a directly-spawned `/bin/zsh -l -c`
+        // reliably gets an abbreviated response with no percentages (verified
+        // against real output — not a guess). Routing it through AppleScript's
+        // `do shell script`, which loads the user's login shell environment the
+        // same way Terminal.app does, was the one invocation path that
+        // consistently returned the full session/week numbers in testing.
+        process.arguments = ["-e", "do shell script \"claude -p '/usage' --output-format json\""]
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-        // Without this, `claude -p` waits ~3s for stdin before proceeding.
         process.standardInput = FileHandle.nullDevice
 
         process.terminationHandler = { proc in
