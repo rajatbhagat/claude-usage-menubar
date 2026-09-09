@@ -13,11 +13,16 @@ final class PlanUsageStore: ObservableObject {
 
     init() {
         refresh()
-        // Plan usage percentages move slowly; polling every 60s keeps the menu
-        // bar current without spawning the `claude` CLI more than needed.
-        timer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+        // Usage can climb several percent per minute under heavy use, so poll
+        // every 30s. The call is free (zero model cost) and cheap (~300ms).
+        let timer = Timer(timeInterval: 30.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        // .common, not the default mode: a timer in the default run loop mode
+        // stops firing while a menu or popover is open, which is exactly when
+        // the user is looking at the numbers.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     func refresh() {

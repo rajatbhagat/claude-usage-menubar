@@ -4,11 +4,15 @@ struct UsageMenuView: View {
     @ObservedObject var planStore: PlanUsageStore
     @ObservedObject var localStore: UsageStore
 
-    private let relativeFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f
-    }()
+    /// "Updated 12s ago" / "Updated just now". Deliberately not
+    /// RelativeDateTimeFormatter, which renders a moment ago as "in 0 seconds".
+    private func updatedText(_ date: Date) -> String {
+        let seconds = Int(Date().timeIntervalSince(date))
+        if seconds < 5 { return "Updated just now" }
+        if seconds < 60 { return "Updated \(seconds)s ago" }
+        let minutes = seconds / 60
+        return "Updated \(minutes)m ago"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -53,8 +57,12 @@ struct UsageMenuView: View {
             Divider()
 
             HStack {
-                if let updated = planStore.lastUpdated {
-                    Text("Updated \(relativeFormatter.localizedString(for: updated, relativeTo: Date()))")
+                if planStore.isRefreshing {
+                    Text("Refreshing…")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else if let updated = planStore.lastUpdated {
+                    Text(updatedText(updated))
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 } else {
@@ -75,6 +83,12 @@ struct UsageMenuView: View {
         }
         .padding(14)
         .frame(width: 280)
+        // Refresh on open, so the numbers are current at the moment you look
+        // rather than up to one poll interval stale.
+        .onAppear {
+            planStore.refresh()
+            localStore.refresh()
+        }
     }
 
     private func planRow(title: String, percent: Int, resetsAt: Date?, resetRaw: String) -> some View {
